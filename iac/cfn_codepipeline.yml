@@ -1,0 +1,340 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Bootiful Micro Pizza EKS Cluster Code Pipeline
+
+Parameters:
+  ModuleName:
+    Description: The name of the module to create the pipeline for
+    Type: String
+    Default: eks-cluster
+  GitHubToken:
+    Description: The GitHub Personal Access Token to use
+    Type: String
+
+Resources:
+  CloudFormationPipelineRole:
+    Description: Creating service role in IAM for AWS CloudFormation
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt CodeBuildRole.Arn
+              Service:
+                - cloudformation.amazonaws.com
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonRoute53FullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/CloudFrontFullAccess
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - ec2:*
+                  - eks:*
+                  - autoscaling:*
+                  - codedeploy:*
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeStacks
+                  - iam:*
+                Effect: Allow
+                Resource: '*'
+          PolicyName: CloudFormationPipelineRolePolicy
+      RoleName: !Join
+        - '-'
+        - - 'bootifulmicropizza'
+          - !Ref ModuleName
+          - 'cloudformation-role'
+    Type: AWS::IAM::Role
+
+  CodeBuildRole:
+    Description: Creating service role in IAM for CodeBuild
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+      Path: /
+      Policies:
+        - PolicyName: "CodeBuildNestedCFNAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogStream"
+                  - "logs:CreateLogGroup"
+                  - "logs:PutLogEvents"
+                  - "eks:DescribeCluster"
+                  - "cloudformation:ListExports"
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      RoleName: !Join
+        - '-'
+        - - 'bootifulmicropizza'
+          - !Ref ModuleName
+          - 'codebuild-role'
+    Type: AWS::IAM::Role
+
+  CodePipelineRole:
+    Description: Creating role in IAM for CodePipeline
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join
+        - '-'
+        - - 'bootifulmicropizza'
+          - !Ref ModuleName
+          - 'codepipeline-role'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+      Path: /
+      Policies:
+        - PolicyName: "CodePipelineNestedCFNAccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "cloudformation:DescribeStacks"
+                  - "cloudformation:DescribeChangeSet"
+                  - "cloudformation:CreateChangeSet"
+                  - "cloudformation:ExecuteChangeSet"
+                  - "cloudformation:DeleteChangeSet"
+                  - "codebuild:StartBuild"
+                  - "codebuild:BatchGetBuilds"
+                  - "codecommit:GetBranch"
+                  - "codecommit:GetCommit"
+                  - "codecommit:UploadArchive"
+                  - "codecommit:GetUploadArchiveStatus"
+                  - "iam:PassRole"
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                Resource:
+                  - 'arn:aws:s3:::cfn.bootifulmicropizza.com/*'
+                  - !Join
+                    - ''
+                    - - 'arn:aws:s3:::'
+                      - !Ref 'ArtifactBucket'
+                  - !Join
+                    - ''
+                    - - 'arn:aws:s3:::'
+                      - !Ref 'ArtifactBucket'
+                      - /*
+
+  CodeBuildProject:
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Description: "CodeBuild Project for Cloudformation bucket content"
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:2.0
+        Type: LINUX_CONTAINER
+      Name: !Join
+        - '-'
+        - - 'serverlesspizza'
+          - !Ref ModuleName
+          - 'cloudformation-content-build-project'
+      ServiceRole: !Ref 'CodeBuildRole'
+      Source:
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 5
+    Type: AWS::CodeBuild::Project
+
+  K8SDeployProject:
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Description: !Join
+        - ''
+        - - 'CodeBuild Project for '
+          - !Ref 'ModuleName'
+      Environment:
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/docker:18.09.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: IMAGE_REPO
+            Type: PLAINTEXT
+            Value: !Join
+            - ''
+            - - !Ref 'AWS::AccountId'
+              - .dkr.ecr.eu-west-1.amazonaws.com
+          - Name: MODULE_NAME
+            Type: PLAINTEXT
+            Value: !Ref ModuleName
+      Name: !Join
+        - '-'
+        - - !Ref ModuleName
+          - deploy
+      ServiceRole: !Ref 'CodeBuildRole'
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-k8s-setup.yml
+      TimeoutInMinutes: 5
+    Type: AWS::CodeBuild::Project
+
+  CodePipeline:
+    DependsOn:
+      - CodeBuildProject
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Join
+        - '-'
+        - - 'bootifulmicropizza'
+          - !Ref 'ModuleName'
+          - 'pipeline'
+      RoleArn:
+        Fn::GetAtt: [CodePipelineRole, Arn]
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        -
+          Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              OutputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                Owner: bootifulmicropizza
+                Repo: !Ref ModuleName
+                Branch: master
+                OAuthToken: !Ref GitHubToken
+              RunOrder: 1
+        -
+          Name: CloudFormationBucket
+          Actions:
+            - Name: BuildCloudFormationBucketChangeSet
+              InputArtifacts:
+                - Name: SourceArtifact
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                StackName: 'bootifulmicropizza-eks-cluster-cloudformation-bucket-stack'
+                ChangeSetName: 'bootifulmicropizza-eks-cluster-cloudformation-bucket-changeset'
+                Capabilities: CAPABILITY_NAMED_IAM
+                TemplatePath: SourceArtifact::iac/cfn_cfn-s3-bucket.yml
+                RoleArn: !GetAtt CloudFormationPipelineRole.Arn
+              RunOrder: 1
+            - Name: Build
+              InputArtifacts:
+                - Name: SourceArtifact
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              OutputArtifacts:
+                - Name: BuiltArtifact
+              RunOrder: 1
+            - Name: ExecuteCloudFormationBucketChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                RoleArn: !GetAtt CloudFormationPipelineRole.Arn
+                StackName: 'bootifulmicropizza-eks-cluster-cloudformation-bucket-stack'
+                ChangeSetName: 'bootifulmicropizza-eks-cluster-cloudformation-bucket-changeset'
+              RunOrder: 2
+            - Name: DeployStaticContent
+              InputArtifacts:
+                - Name: BuiltArtifact
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: S3
+              Configuration:
+                BucketName: 'cfn.bootifulmicropizza.com'
+                Extract: true
+              RunOrder: 3
+        -
+          Name: Deploy
+          Actions:
+            - Name: BuildEksClusterChangeSet
+              InputArtifacts:
+                - Name: SourceArtifact
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                StackName: 'bootifulmicropizza-eks-cluster-stack'
+                ChangeSetName: 'bootifulmicropizza-eks-cluster-changeset'
+                Capabilities: CAPABILITY_NAMED_IAM
+                TemplatePath: SourceArtifact::iac/cfn_eks-cluster-stack.yml
+                RoleArn: !GetAtt CloudFormationPipelineRole.Arn
+                ParameterOverrides: '{"ClusterName": "bootifulmicropizza-eks-cluster"}'
+              RunOrder: 1
+            - Name: ExecuteEksClusterChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                RoleArn: !GetAtt CloudFormationPipelineRole.Arn
+                StackName: 'bootifulmicropizza-eks-cluster-stack'
+                ChangeSetName: 'bootifulmicropizza-eks-cluster-changeset'
+              RunOrder: 2
+            - Name: Deploy_K8S
+              InputArtifacts:
+                - Name: SourceArtifact
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref K8SDeployProject
+              RunOrder: 3
+
+  ArtifactBucket:
+    DeletionPolicy: Delete
+    Description: Creating Amazon S3 bucket for CodePipeline artifacts
+    Properties:
+      BucketName: !Join
+        - '-'
+        - - 'bootifulmicropizza'
+          - !Ref ModuleName
+          - 'artifact-bucket'
+      LifecycleConfiguration:
+        Rules:
+          - ExpirationInDays: 7
+            Status: Enabled
+      PublicAccessBlockConfiguration:
+        RestrictPublicBuckets: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        BlockPublicAcls: true
+    Type: AWS::S3::Bucket

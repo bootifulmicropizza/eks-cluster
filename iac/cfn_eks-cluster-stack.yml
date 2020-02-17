@@ -1,0 +1,45 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EKS Cluster CloudFormation template
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: "EKS Cluster Name"
+
+Resources:
+  VpcStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TimeoutInMinutes: "10"
+      TemplateURL: https://s3.amazonaws.com/cfn.bootifulmicropizza.com/cfn_eks-vpc.yml
+      Parameters:
+        VpcName: bootifulmicropizza-vpc
+        AvailabilityZones: 'eu-west-1a, eu-west-1b, eu-west-1c'
+
+  EksCluster:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VpcStack
+    Properties:
+      TimeoutInMinutes: "20"
+      TemplateURL: https://s3.amazonaws.com/cfn.bootifulmicropizza.com/cfn_eks-cluster.yml
+      Parameters:
+        ClusterName: !Ref ClusterName
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        SubnetIds: !Join [ ",", [ !GetAtt VpcStack.Outputs.SubnetIds ] ]
+        ClusterControlPlaneSecurityGroup:  !GetAtt VpcStack.Outputs.SecurityGroups
+
+  EksNodes:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: EksCluster
+    Properties:
+      TimeoutInMinutes: "20"
+      TemplateURL: https://s3.amazonaws.com/cfn.bootifulmicropizza.com/cfn_eks-nodes.yml
+      Parameters:
+        KeyName: "eks-cluster"
+        NodeImageId: "ami-0a9006fb385703b54" # Ireland AMI ID
+        ClusterName: !Ref ClusterName
+        NodeGroupName: !Join [ "-", [ !Ref ClusterName, 'node' ] ]
+        ClusterControlPlaneSecurityGroup:  !GetAtt VpcStack.Outputs.SecurityGroups
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        Subnets: !GetAtt VpcStack.Outputs.SubnetIds

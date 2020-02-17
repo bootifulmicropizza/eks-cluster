@@ -1,0 +1,15 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Bootiful Micro Pizza AWS EKS Cluster CloudFormation S3 Bucket
+
+Resources:
+  CfnContentBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Description: Amazon S3 bucket for the Cloudformation scripts
+    Properties:
+      BucketName: "cfn.bootifulmicropizza.com"
+      PublicAccessBlockConfiguration:
+        RestrictPublicBuckets: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        BlockPublicAcls: true
